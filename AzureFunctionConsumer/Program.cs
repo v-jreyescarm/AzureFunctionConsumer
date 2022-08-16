@@ -148,61 +148,40 @@ namespace AzureFunctionConsumer
                 WriteLine("Enter the Blob Container name: (lowercase only letters!)");
                 BlobContainerName = ReadLine().ToLower();
             }
+            WriteLine("Enter number of blobs to add: ");
+            int BlobsToSend = 0;
+            while (!int.TryParse(ReadLine(), out BlobsToSend))
+            {
+                WriteLine("Try again, this value must be numeric.");
+            }
             CloudStorageAccount storageAccount = CloudStorageAccount.Parse(BlobStorageConnectionString);
             blobClient = storageAccount.CreateCloudBlobClient();
+            WriteLine("Creating blob container...");
             CloudBlobContainer blobContainer = blobClient.GetContainerReference(BlobContainerName);
-
-            WriteLine("Enter A to add blobs or S to search the blob container:");
-            var AddOrSearch = ReadLine();
-            while (AddOrSearch != "A" && AddOrSearch != "S")
+            if (await blobContainer.CreateIfNotExistsAsync())
             {
-                WriteLine("Try again, this value must be either A or S");
-                WriteLine("Enter A to add blobs or S to search the blob container:");
-                AddOrSearch = ReadLine().ToUpper();
-            }
-            if (AddOrSearch == "S")
-            {
-                await SearchBlobsAsync(blobContainer);
+                WriteLine($"Blob container '{blobContainer.Name}' Created.");
             }
             else
             {
-                WriteLine("Enter number of blobs to add: ");
-                int BlobsToSend = 0;
-                while (!int.TryParse(ReadLine(), out BlobsToSend))
-                {
-                    WriteLine("Try again, this value must be numeric.");
-                }
-                WriteLine("Creating blob container...");
-                //CloudBlobContainer blobContainer = blobClient.GetContainerReference(BlobContainerName);
-                if (await blobContainer.CreateIfNotExistsAsync())
-                {
-                    WriteLine($"Blob container '{blobContainer.Name}' Created.");
-                }
-                else
-                {
-                    WriteLine($"Blob container '{blobContainer.Name}' Exists.");
-                }
+                WriteLine($"Blob container '{blobContainer.Name}' Exists.");
+            }
 
-                await SendBlobsToBlobStorage(BlobsToSend, blobContainer);
+            await SendBlobsToBlobStorage(BlobsToSend, blobContainer);
 
-                WriteLine("Press Y to delete the blobs.");
+            WriteLine("Press Y to delete the blobs.");
 
-                if (ReadLine() == "Y")
-                {
-                    await DeleteBlobs(BlobsToSend, blobContainer);
-                }
-                else
-                {
-                    WriteLine("No blobs deleted.");
-                }
+            if (ReadLine() == "Y")
+            {
+                await DeleteBlobs(BlobsToSend, blobContainer);
+            }
+            else
+            {
+                WriteLine("No blobs deleted.");
             }
         }
         private static async Task SendBlobsToBlobStorage(int numBlobsToSend, CloudBlobContainer container)
         {
-            Random r = new Random();
-            var number = r.Next(1, 10);
-            string blobContent = string.Empty;
-
             for (var i = 0; i < numBlobsToSend; i++)
             {
                 try
@@ -210,13 +189,7 @@ namespace AzureFunctionConsumer
                     var blob = $"Blob {i}";
                     WriteLine($"Sending blob: {blob} named helloworld{i}.txt to {container.Name}");
                     CloudBlockBlob blockBlob = container.GetBlockBlobReference($"helloworld{i}.txt");
-
-                    for (int n = 0; n < number; n++)
-                    {
-                        blobContent = blobContent + Guid.NewGuid().ToString("N");
-                    }
-
-                    await blockBlob.UploadTextAsync(blobContent);
+                    blockBlob.UploadTextAsync($"Hello, World! {i}").Wait();
                 }
                 catch (StorageException se)
                 {
@@ -256,132 +229,6 @@ namespace AzureFunctionConsumer
             }
 
             WriteLine($"{numBlobsToDelete} blobs deleted.");
-        }
-        private static async Task SearchBlobsAsync(CloudBlobContainer container)
-        {
-            if (await container.ExistsAsync())
-            {
-                WriteLine($"Enter the path to search, leave blank to search the entire '{container.Name}' container:");
-                WriteLineWithGreenColor(true);
-                WriteLine($"Ex: blobreceipts/hostId/namespace.functionName.Run");
-                WriteLineWithGreenColor(false);
-                var prefix = @ReadLine();
-
-                WriteLine($"Enter the start date by counting the number of days from today on which the search should start.");
-                WriteLineWithGreenColor(true);
-                WriteLine($"Ex: 1 is {DateTime.Now.AddDays(-1)} (yesterday) and 5 is {DateTime.Now.AddDays(-5)} (5 days ago)");
-                WriteLineWithGreenColor(false);
-                int startDate = (ToInt32(ReadLine()) * -1);
-
-                WriteLine($"Enter the end date by counting the number of days from today on which the search should end.");
-                WriteLineWithGreenColor(true);
-                WriteLine($"Enter 0 for now {DateTime.Now}");
-                WriteLineWithGreenColor(false);
-                int endDate = (ToInt32(ReadLine()) * -1);
-                if (endDate == 0) endDate = 1; //Seems this logic didn't work when endDate was 0, but nothing can already exist which is added tomorrow...
-
-                if (startDate > endDate)
-                {
-                    WriteLine($"Start date {DateTime.Now.AddDays(startDate)} " +
-                        $"cannot come before end date {DateTime.Now.AddDays(endDate)}, start over.");
-                    return;
-                }
-                WriteLineWithGreenColor(true);
-                WriteLine($"Searching '{container.Name} -> {prefix}' from {DateTime.Now.AddDays(startDate)} " +
-                    $"to {DateTime.Now.AddDays(endDate)}");
-                WriteLineWithGreenColor(false);
-
-                try
-                {
-                    int maxResults = 500;
-                    BlobContinuationToken continuationToken = null;
-                    CloudBlob blob;
-                    IEnumerable<IListBlobItem> blobList;
-
-                    do
-                    {
-                        BlobResultSegment resultSegment = await container.ListBlobsSegmentedAsync(prefix,
-                            true, BlobListingDetails.Metadata, maxResults, continuationToken, null, null);
-
-                        blobList = resultSegment.Results.OfType<CloudBlob>()
-                            .Where(b => b.Properties.Created >= DateTime.Today.AddDays(startDate) &&
-                            b.Properties.Created <= DateTime.Today.AddDays(endDate))
-                            .Select(b => b);
-
-                        foreach (var blobItem in blobList)
-                        {
-                            blob = (CloudBlob)blobItem;
-                            await blob.FetchAttributesAsync();
-                            WriteLine($"Blob name: {blob.Name} - last modified on {blob.Properties.LastModified}");
-                        }
-                        continuationToken = resultSegment.ContinuationToken;
-
-                    } while (continuationToken != null);
-
-                    if (blobList.Count() > 0)
-                    {
-                        WriteLine("Would you like to remove/reprocess a blob? Y/N ");
-                        var delete = ReadLine();
-                        while (delete == "Y")
-                        {
-                            //should repopulate blobList and check there are blobs to delete
-                            WriteLine("Enter the path and blob name you would like to remove/reprocess: ");
-                            WriteLineWithGreenColor(true);
-                            WriteLine($"Ex: {((CloudBlob)blobList.First()).Name}");
-                            WriteLineWithGreenColor(false);
-                            var path = ReadLine();
-
-                            CloudBlockBlob blockBlob = container.GetBlockBlobReference(path);
-                            await blockBlob.DeleteIfExistsAsync();
-                            WriteLine($"Deleted {path} from {container.Name}");
-
-                            WriteLine("Would you like to remove/reprocess another blob? Y/N ");
-                            delete = ReadLine();
-                        }
-                    }
-                }
-                catch (StorageException e)
-                {
-                    WriteLine(e.Message);
-                    ReadLine();
-                }
-
-                if (container.Name.ToLower() != "azure-webjobs-hosts")
-                {
-                    WriteLineWithYellowColor(true);
-                    WriteLine($"NOTE: you searched '{container.Name} -> {prefix}'.  You need to search in the " +
-                        "azure-webjobs-hosts container if you want to reprocess a blob.");
-                    WriteLineWithYellowColor(false);
-                }                
-            }
-            else
-            {
-                WriteLine($"Blob container '{container.Name}' doesn't exist.  Please start over.");
-            }
-        }
-        public static void WriteLineWithGreenColor(bool enable)
-        {
-            if (enable)
-            {
-                Console.BackgroundColor = ConsoleColor.DarkGreen;
-                Console.ForegroundColor = ConsoleColor.Black;
-            }
-            else
-            {
-                Console.ResetColor();
-            }
-        }
-        public static void WriteLineWithYellowColor(bool enable)
-        {
-            if (enable)
-            {
-                Console.BackgroundColor = ConsoleColor.DarkYellow;
-                Console.ForegroundColor = ConsoleColor.Black;
-            }
-            else
-            {
-                Console.ResetColor();
-            }
         }
         #endregion
         #region Event Hubs
@@ -614,7 +461,7 @@ namespace AzureFunctionConsumer
                     WriteLine($"The response code is: {response.StatusCode}");
                     response.EnsureSuccessStatusCode();
                     var resultContent = await response.Content.ReadAsStringAsync();
-                    WriteLine(resultContent);
+                    WriteLine(resultContent);                    
                 }
                 catch (HttpRequestException hre)
                 {
@@ -731,13 +578,19 @@ namespace AzureFunctionConsumer
             {
                 WriteLine("Try again, this value must be numeric.");
             }
+            WriteLine("Enter number of partition keys to use: ");
+            int CosmosPartitionsToUSe = 0;
+            while (!int.TryParse(ReadLine(), out CosmosPartitionsToUSe))
+            {
+                WriteLine("Try again, this value must be numeric.");
+            }
 
             try
             {
                 using (documentClient = new DocumentClient(new Uri(CosmosEndpointUrl), CosmosAccountKey))
                 {
                     Uri collectionUri = UriFactory.CreateDocumentCollectionUri(CosmosDatabaseName, CosmosCollectionName);
-                    await SendDocumentsToCosmos(CosmosDocumentsToSend, collectionUri);
+                    await SendDocumentsToCosmos(CosmosDocumentsToSend, CosmosPartitionsToUSe, collectionUri);
                     WriteLine($"Press Y to delete **ALL** documents in the '{CosmosCollectionName}' container.");
                     if (ReadLine() == "Y")
                     {
@@ -758,16 +611,22 @@ namespace AzureFunctionConsumer
                 WriteLine($"Error occurred: {ex.Message}");
             }
         }
-        private static async Task SendDocumentsToCosmos(int numDocumentsToSend, Uri collectionUri)
+        private static async Task SendDocumentsToCosmos(int numDocumentsToSend, int numPatitionKeys, Uri collectionUri)
         {
             Random r = new Random();
+
+            string[] partitionKeys = new string[numPatitionKeys];
+            for (int i = 0; i < partitionKeys.Length; i++) {
+                partitionKeys[i] = r.Next(1, 2147483647).ToString();
+            }
 
             for (var i = 0; i < numDocumentsToSend; i++)
             {
                 try
                 {
                     var Id = r.Next(1, 2147483647).ToString();
-                    CosmosDocument cosmosDocument = CreateCosmosDocument(Id);
+                    int part = (int) Math.Floor((double) i / (numDocumentsToSend / numPatitionKeys));
+                    CosmosDocument cosmosDocument = CreateCosmosDocument(Id, partitionKeys[part]);
                     WriteLine($"Sending document with Id = : {Id}");
                     await documentClient.CreateDocumentAsync(collectionUri, cosmosDocument);
                 }
@@ -791,10 +650,10 @@ namespace AzureFunctionConsumer
             var documents =
                 from d in documentClient.CreateDocumentQuery(collectionUri, fe).ToList()
                 select d;
-
+                        
             int i = 0;
             foreach (var item in documents)
-            {
+            {                
                 try
                 {
                     ResourceResponse<Document> response = await documentClient.DeleteDocumentAsync(
@@ -812,7 +671,7 @@ namespace AzureFunctionConsumer
                     else
                     {
                         WriteLine($"{dce.StatusCode} error occurred: {dce.Message}");
-                    }
+                    }                    
                 }
                 catch (Exception ex)
                 {
@@ -823,11 +682,12 @@ namespace AzureFunctionConsumer
             }
             WriteLine($"{i.ToString()} documents deleted.");
         }
-        private static CosmosDocument CreateCosmosDocument(string documentId)
+        private static CosmosDocument CreateCosmosDocument(string documentId, string partitionKey)
         {
             CosmosDocument cosmosDocument = new CosmosDocument()
             {
-                Id = documentId,
+                id = documentId,
+                Key = partitionKey,
                 CreateDate = DateTime.Now,
                 AccountNumber = $"Account{documentId}",
                 Freight = 472.3108m,
@@ -847,7 +707,8 @@ namespace AzureFunctionConsumer
         public class CosmosDocument
         {
             [JsonProperty(PropertyName = "id")]
-            public string Id { get; set; }
+            public string id { get; set; }
+            public string Key { get; set; }
             public DateTime CreateDate { get; set; }
             public string AccountNumber { get; set; }
             public decimal Freight { get; set; }
